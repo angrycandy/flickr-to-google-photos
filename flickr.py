@@ -69,8 +69,12 @@ class FlickrHelper:
 
     def get_photo_lat_lon(self, photo_id):
         photo_json = self.get_photo_json(photo_id)
-        geo = photo_json["geo"]
-        return geo
+        geos = photo_json["geo"]
+        try:
+            geo = geos[0]
+            return geo
+        except IndexError:
+            return None
 
     def has_photo_json(self, photo_id):
         photo_json_file = os.path.join(self.flickr_photo_json_dir, "photo_%s.json" % photo_id)

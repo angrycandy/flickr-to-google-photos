@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import logging
+import time
 
 from google.auth.transport.requests import AuthorizedSession
 from google.oauth2.credentials import Credentials
@@ -35,7 +36,7 @@ def get_authorized_session(client_secrets_file, auth_token_file):
     if not creds:
         flow = InstalledAppFlow.from_client_secrets_file(
             client_secrets_file, scopes=scopes)
-        creds = flow.run_console()
+        creds = flow.run_local_server(port=0)
 
     session = AuthorizedSession(creds)
     save_credentials(creds, auth_token_file)
@@ -81,7 +82,7 @@ class PhotoUploader:
             else:
                 logging.warning("Skipping invalid photo id: {}".format(flickr_photo_id))
 
-    def get_or_create_album(self, flickr_album):
+    def get_or_create_album(self, flickr_album, retry_count=2):
 
         params = {'excludeNonAppCreatedData': True}
 
@@ -102,7 +103,13 @@ class PhotoUploader:
         logging.info("Creating new album: '%s'" % flickr_album["title"])
         r = self.session.post("https://photoslibrary.googleapis.com/v1/albums", json={"album": {"title": flickr_album["title"]}})
         logging.debug("Create album response: {}".format(r.text))
-        r.raise_for_status()
+
+        if r.status_code == 429 and retry_count > 0:
+            time.sleep(31) # https://developers.google.com/photos/library/guides/best-practices#retrying-failed-requests
+            self.get_or_create_album(flickr_album, retry_count - 1)
+        else:
+            r.raise_for_status()
+
         google_album = r.json()
 
         if flickr_album["description"]:
@@ -124,7 +131,7 @@ class PhotoUploader:
         r = self.session.post("https://photoslibrary.googleapis.com/v1/albums/%s:addEnrichment" % google_album_id, json=enrich_req_body)
         logging.debug("Enrich album response: {}".format(r.text))
 
-    def upload_photo(self, flickr_photo_id, google_album_id, is_cover_photo):
+    def upload_photo(self, flickr_photo_id, google_album_id, is_cover_photo, retry_count=2):
         flickr_photo_fspath = self.flickr.get_photo_fspath(flickr_photo_id)
         logging.info("Uploading photo: '%s: %s'" % (flickr_photo_id, flickr_photo_fspath))
 
@@ -135,7 +142,13 @@ class PhotoUploader:
                 "X-Goog-Upload-Protocol": "raw"
             }
             resp = self.session.post("https://photoslibrary.googleapis.com/v1/uploads", data=f, headers=headers)
-            resp.raise_for_status()
+
+            if resp.status_code == 429 and retry_count > 0:
+                time.sleep(31) # https://developers.google.com/photos/library/guides/best-practices#retrying-failed-requests
+                self.upload_photo(flickr_photo_id, google_album_id, is_cover_photo, retry_count - 1)
+            else:
+                resp.raise_for_status()
+
             upload_token = resp.text
             logging.debug("Received upload token: %s" % upload_token)
 
@@ -151,7 +164,13 @@ class PhotoUploader:
         if is_cover_photo:
             create_request_body["albumPosition"] = {"position": "FIRST_IN_ALBUM"}
 
-        self.session.post("https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate", json=create_request_body).raise_for_status()
+        resp = self.session.post("https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate", json=create_request_body)
+
+        if resp.status_code == 429 and retry_count > 0:
+            time.sleep(31) # https://developers.google.com/photos/library/guides/best-practices#retrying-failed-requests
+            self.upload_photo(flickr_photo_id, google_album_id, is_cover_photo, retry_count - 1)
+        else:
+            resp.raise_for_status()
 
 
 def main(config):
