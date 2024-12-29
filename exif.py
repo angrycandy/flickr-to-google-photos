@@ -1,5 +1,4 @@
 import logging
-import math
 import piexif
 
 class GeoHelper:
@@ -8,7 +7,7 @@ class GeoHelper:
         self.longitude = int(flickr_geo_json["longitude"])
         self.photo_fspath = photo_fspath
 
-    def update_geo_exif(self):        
+    def update_geo_exif(self):
         latitude = self.latitude / 1000000  # Flickr geo json doesn't have decimals!
         longitude = self.longitude / 1000000  # Flickr geo json doesn't have decimals!
 
@@ -17,12 +16,39 @@ class GeoHelper:
             if exif_dict.get("GPS"):
                 logging.debug("Skipping photo with pre-existing GPS Exif tag: {}".format(self.photo_fspath))
                 return
-            
+
             exif_dict["GPS"] = _create_gps_tag(latitude, longitude)
             exif_bytes = piexif.dump(exif_dict)
             piexif.insert(exif_bytes, self.photo_fspath)
         except Exception as err:
             logging.warn("Could not set exif for file ({}): {}".format(self.photo_fspath, err))
+
+class DateHelper:
+    def __init__(self, name, date_taken, photo_fspath):
+        self.name = name
+        self.date_taken = date_taken
+        self.photo_fspath = photo_fspath
+
+    def update_date(self):
+        try:
+            exif_dict = piexif.load(self.photo_fspath)
+            if '0th' in exif_dict and piexif.ImageIFD.DateTime in exif_dict['0th']:
+                logging.debug("Skipping photo with pre-existing DateTime Exif tag: {}".format(self.photo_fspath))
+                return
+            if 'Exif' in exif_dict and piexif.ExifIFD.DateTimeOriginal in exif_dict['Exif']:
+                logging.debug("Skipping photo with pre-existing DateTimeOriginal Exif tag: {}".format(self.photo_fspath))
+                return
+            logging.debug("Setting DateTime Exif: {}".format(self.photo_fspath))
+
+            exif_dict['0th'][piexif.ImageIFD.DateTime] = self.date_taken
+            exif_dict['Exif'][piexif.ExifIFD.DateTimeOriginal] = self.date_taken
+            exif_dict['Exif'][piexif.ExifIFD.DateTimeDigitized] = self.date_taken
+            exif_bytes = piexif.dump(exif_dict)
+            piexif.insert(exif_bytes, self.photo_fspath)
+        except Exception as err:
+            d = self.__dict__
+            d['error'] = err
+            logging.warn("Could not set date %s", d)
 
 def _create_gps_tag(latitude, longitude):
     gps = {}

@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 import json
 import os
-import re
 import sys
 import logging
 import time
@@ -10,6 +9,7 @@ from google.auth.transport.requests import AuthorizedSession
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 
+from exif import DateHelper, GeoHelper
 from flickr import FlickrHelper
 
 def save_credentials(creds, auth_token_file):
@@ -45,72 +45,107 @@ def get_authorized_session(client_secrets_file, auth_token_file):
 
 class PhotoUploader:
     def __init__(self, flickr, session):
+        self.posted_count = 0
         self.flickr = flickr
         self.session = session
+        self.google_albums_by_title = None
+        self.done_albums_file = None
 
-    def upload_all_albums(self):
-        albums = self.flickr.get_all_albums()
-        count, total = 1, len(albums)
-        for album in albums:
-            logging.info("Going to upload: '{}' [{}/{}]".format(album["title"], count, total))
-            self.upload_album(album)
-            count += 1
-            
-    def upload_album(self, flickr_album):
-        album = self.get_or_create_album(flickr_album)
+    def upload_photos(self):
+        id_files = self.flickr.flickr_id_files
+        logging.info("Uploading %s photos", len(id_files))
 
-        if not album or not album["title"]:
-            logging.error("Failed to create album. Exiting.")
-            raise SystemExit
+        for id, file in id_files:
+            self.update_exif(id, file)
+            upload_token = self.upload_photo(id, file)
+            if not upload_token:
+                continue
+            photo_json = self.flickr.get_photo_json(id)
+            self.add_photo_to_albums(photo_json, upload_token)
+            self.add_photo_to_tags(photo_json, upload_token)
+            self.flickr.done_id(id, upload_token)
+            # return
 
-        if int(album.get("mediaItemsCount", 0)) >= int(flickr_album["photo_count"]):
-            logging.info("Skipping upload of album '{}' since item count in Google [{}] is >= item count in Flickr [{}]".format(
-                album["title"], album["mediaItemsCount"], flickr_album["photo_count"]))
+    def add_photo_to_albums(self, photo_json, upload_token):
+        if photo_json is None:
             return
+        for album in photo_json["albums"]:
+            title = album["title"]
+            album_json = self.flickr.get_album_json(title)
+            self.add_photo_to_album(album_json, photo_json, upload_token)
 
-        logging.info("Starting upload of photos to: '%s'" % album["title"])
+    def add_photo_to_tags(self, photo_json, upload_token):
+        if photo_json is None:
+            return
+        for tag in photo_json["tags"]:
+            title = "tag " + tag["tag"]
+            album_json = {"title": title, "description": "", "cover_photo": ""}
+            self.add_photo_to_album(album_json, photo_json, upload_token)
 
+    def add_photo_to_album(self, album_json, photo_json, upload_token):
+        album_title = album_json["title"]
+        google_album = self.get_or_create_google_album(album_json)
+        cover_photo_id = self.get_album_cover_photo_id(album_json)
+        flickr_photo_id = photo_json["id"]
+        create_request_body = {
+            "albumId": google_album["id"],
+            "newMediaItems": [
+                {
+                    "simpleMediaItem": {"uploadToken": upload_token}
+                }
+            ]}
+
+        if flickr_photo_id == cover_photo_id:
+            create_request_body["albumPosition"] = {"position": "FIRST_IN_ALBUM"}
+
+        logging.debug(f"adding {flickr_photo_id} to {album_title}")
+        logging.debug(f"    req: {create_request_body}")
+
+        post = lambda: self.session.post("https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate", json=create_request_body)
+        self.posted(post, f"add {flickr_photo_id} to album {album_title}")
+
+    def update_exif(self, flickr_photo_id, flickr_photo_file):
+        logging.debug("Going to update exif for photo: '%s'" % flickr_photo_id)
+        path = self.flickr.get_photo_fspath(flickr_photo_file)
+        geo = self.flickr.get_photo_lat_lon(flickr_photo_id)
+        if geo:
+            gh = GeoHelper(geo, path)
+            gh.update_geo_exif()
+        date = self.flickr.get_date_taken(flickr_photo_id)
+        name = self.flickr.get_name(flickr_photo_id)
+        dh = DateHelper(name, date, path)
+        dh.update_date()
+
+    def get_album_cover_photo_id(self, flickr_album):
         cover_photo_id = flickr_album["cover_photo"].rpartition("/")
         if cover_photo_id[1] == "/":
             cover_photo_id = cover_photo_id[2]
         else:
             cover_photo_id = None
 
-        for flickr_photo_id in flickr_album["photos"]:
-            if self.flickr.is_photo_valid(flickr_photo_id):
-                self.upload_photo(flickr_photo_id, album["id"], flickr_photo_id == cover_photo_id)
-            else:
-                logging.warning("Skipping invalid photo id: {}".format(flickr_photo_id))
+    def get_or_create_google_album(self, flickr_album):
+        google_album = self.get_google_album(flickr_album["title"])
+        if google_album:
+            return google_album
+        return self.create_google_album(flickr_album)
 
-    def get_or_create_album(self, flickr_album, retry_count=2):
+    def create_google_album(self, flickr_album):
+        album_title = flickr_album["title"]
 
-        params = {'excludeNonAppCreatedData': True}
+        logging.info(f"Creating google album: {album_title}")
+        post = lambda: self.session.post("https://photoslibrary.googleapis.com/v1/albums", json={"album": {"title": album_title}})
+        resp = self.posted(post,f"create google album: {album_title}")
 
-        while True:
-            albums = self.session.get('https://photoslibrary.googleapis.com/v1/albums', params=params).json()
-            logging.debug("Retrieved album list: %s" % albums)
-            for album in albums.get("albums", []):
-                if album["title"].lower() == flickr_album["title"].lower():
-                    logging.info("Found existing album: '{}'".format(album["title"]))
-                    return album
+        if not resp:
+            return None
 
-            if 'nextPageToken' in albums:
-                params["pageToken"] = albums["nextPageToken"]
-            else:
-                break
+        google_album = resp.json()
 
-        # No albums found. Create new.
-        logging.info("Creating new album: '%s'" % flickr_album["title"])
-        r = self.session.post("https://photoslibrary.googleapis.com/v1/albums", json={"album": {"title": flickr_album["title"]}})
-        logging.debug("Create album response: {}".format(r.text))
+        if "id" not in google_album:
+            logging.info(f"No id in google_album: {google_album}")
+            return None
 
-        if r.status_code == 429 and retry_count > 0:
-            time.sleep(31) # https://developers.google.com/photos/library/guides/best-practices#retrying-failed-requests
-            self.get_or_create_album(flickr_album, retry_count - 1)
-        else:
-            r.raise_for_status()
-
-        google_album = r.json()
+        self.save_google_album(album_title, google_album)
 
         if flickr_album["description"]:
             self.set_album_description(google_album["id"], flickr_album["description"])
@@ -118,6 +153,8 @@ class PhotoUploader:
         return google_album
 
     def set_album_description(self, google_album_id, description):
+        description = self.convert_description(description, "album")
+
         enrich_req_body = {
             "newEnrichmentItem": {
                 "textEnrichment": {
@@ -131,47 +168,117 @@ class PhotoUploader:
         r = self.session.post("https://photoslibrary.googleapis.com/v1/albums/%s:addEnrichment" % google_album_id, json=enrich_req_body)
         logging.debug("Enrich album response: {}".format(r.text))
 
-    def upload_photo(self, flickr_photo_id, google_album_id, is_cover_photo, retry_count=2):
-        flickr_photo_fspath = self.flickr.get_photo_fspath(flickr_photo_id)
-        logging.info("Uploading photo: '%s: %s'" % (flickr_photo_id, flickr_photo_fspath))
+    def convert_description(self, description, item):
+        description = description.replace("&quot;", "\"")
+        description = description.replace("&amp;", "&")
 
-        upload_token = None
-        with open(flickr_photo_fspath, 'rb') as f:
+        # https://developers.google.com/photos/library/reference/rest/v1/mediaItems/batchCreate#NewMediaItem
+        if len(description) > 909:
+            logging.info(f"replaced Too much description text for {item}")
+            description = "Too much description text"
+        return description
+
+    def upload_photo(self, flickr_photo_id, flickr_photo_file):
+        logging.info("Uploading photo: %s, %s" % (flickr_photo_id, flickr_photo_file))
+        path = self.flickr.get_photo_fspath(flickr_photo_file)
+        with open(path, 'rb') as f:
             headers = {
-                "X-Goog-Upload-File-Name": os.path.basename(flickr_photo_fspath),
+                "X-Goog-Upload-File-Name": flickr_photo_file,
                 "X-Goog-Upload-Protocol": "raw"
             }
-            resp = self.session.post("https://photoslibrary.googleapis.com/v1/uploads", data=f, headers=headers)
+            post = lambda: self.session.post("https://photoslibrary.googleapis.com/v1/uploads", data=f, headers=headers)
+            resp = self.posted(post, f"upload {flickr_photo_id}, {flickr_photo_file}")
 
-            if resp.status_code == 429 and retry_count > 0:
-                time.sleep(31) # https://developers.google.com/photos/library/guides/best-practices#retrying-failed-requests
-                self.upload_photo(flickr_photo_id, google_album_id, is_cover_photo, retry_count - 1)
-            else:
-                resp.raise_for_status()
+        if not resp:
+            return None
 
-            upload_token = resp.text
-            logging.debug("Received upload token: %s" % upload_token)
+        upload_token = resp.text
+        logging.debug("Received upload token: %s" % upload_token)
+
+        description = self.flickr.get_photo_description(flickr_photo_id)
+        if description == "":
+            return upload_token
+        description = self.convert_description(description, flickr_photo_id)
 
         create_request_body = {
-            "albumId": google_album_id,
             "newMediaItems": [
                 {
-                    "description": self.flickr.get_photo_description(flickr_photo_id),
+                    "description": description,
                     "simpleMediaItem": {"uploadToken": upload_token}
                 }
             ]}
 
-        if is_cover_photo:
-            create_request_body["albumPosition"] = {"position": "FIRST_IN_ALBUM"}
+        post = lambda: self.session.post("https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate", json=create_request_body)
+        self.posted(post, f"set description {flickr_photo_id}, {flickr_photo_file}")
+        return upload_token
 
-        resp = self.session.post("https://photoslibrary.googleapis.com/v1/mediaItems:batchCreate", json=create_request_body)
+    def posted(self, post, action):
+        for i in range(1, 5):
+            resp = post()
+            if resp.status_code == 200:
+                self.posted_count += 1
+                return resp
 
-        if resp.status_code == 429 and retry_count > 0:
-            time.sleep(31) # https://developers.google.com/photos/library/guides/best-practices#retrying-failed-requests
-            self.upload_photo(flickr_photo_id, google_album_id, is_cover_photo, retry_count - 1)
-        else:
-            resp.raise_for_status()
+            # "error": {
+            #   "code": 429,
+            #   "message": "Quota exceeded for quota metric 'Write requests' and limit 'Write requests per minute per user' of service 'photoslibrary.googleapis.com' for consumer 'project_number:...'.",
+            if resp.status_code != 429:
+                logging.debug(f"    {resp.status_code}: {resp.text}")
 
+            # https://developers.google.com/photos/library/guides/best-practices#retrying-failed-requests
+            time.sleep(31)
+
+        logging.info(f"    Failed: {action}")
+        if resp.status_code == 429:
+            logging.info("    Possible quota limit: https://developers.google.com/photos/overview/api-limits-quotas")
+        logging.info(f"    Exit on posted count: {self.posted_count}")
+        exit(1)
+        return None
+
+    def get_google_album(self, title):
+        if self.google_albums_by_title is None:
+            self.get_google_albums()
+        return self.google_albums_by_title.get(title)
+
+    def save_google_album(self, title, google_album):
+        if self.google_albums_by_title is None:
+            self.google_albums_by_title = {}
+        self.google_albums_by_title[title] = google_album
+        if self.done_albums_file:
+            f = self.done_albums_file
+            a = json.dumps([title, google_album])
+            f.write(f"{a}\n")
+            f.flush()
+
+    def get_google_albums(self):
+        if os.access("done_albums.txt", os.R_OK):
+            with open("done_albums.txt", 'r') as f:
+                for line in f:
+                    title, album = json.loads(line)
+                    self.save_google_album(title, album)
+
+            logging.info(f"Read {len(self.google_albums_by_title)} albums from done_albums.txt")
+
+            self.done_albums_file = open("done_albums.txt", 'a')
+
+            return
+
+        self.done_albums_file = open("done_albums.txt", 'a')
+
+        params = {'excludeNonAppCreatedData': True}
+
+        while True:
+            albums = self.session.get('https://photoslibrary.googleapis.com/v1/albums', params=params).json()
+            logging.debug("Retrieved album list: %s" % albums)
+            for album in albums.get("albums", []):
+                title = album["title"]
+                logging.debug("Found existing album: '{}'".format(title))
+                self.save_google_album(title, album)
+
+            if 'nextPageToken' in albums:
+                params["pageToken"] = albums["nextPageToken"]
+            else:
+                break
 
 def main(config):
     flickr = FlickrHelper(
@@ -186,8 +293,7 @@ def main(config):
     )
 
     uploader = PhotoUploader(flickr, session)
-    uploader.upload_all_albums()
-
+    uploader.upload_photos()
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG,

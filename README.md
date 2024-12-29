@@ -2,11 +2,11 @@
 
 This repo contains couple of utilities that import albums from Flickr into Google Photos.
 
-Flickr provides a complete data dump through their [Request my Flickr Data][0] option in account settings. 
-This data dump includes all the photos and videos that you ever uploaded to Flickr, as well as lots of json files 
+Flickr provides a complete data dump through their [Request my Flickr Data][0] option in account settings.
+This data dump includes all the photos and videos that you ever uploaded to Flickr, as well as lots of json files
 describing all of your albums, comments, and other activity on Flickr.
 
-Google Photos provides a [basic API][1] to create albums and upload photos. 
+Google Photos provides a [basic API][1] to create albums and upload photos.
 
 The scripts in this repo help achieve the following:
 
@@ -14,7 +14,7 @@ The scripts in this repo help achieve the following:
 * For each Flickr album, recreate the album in Google Photos and upload the contained photos and videos.
 * Set the album description, album cover photo, and photo description, as best as the API allows.
 
-**NOTE:** These scripts will not upload all the photos from the Flickr dump; only photos inside albums. 
+**NOTE:** These scripts will not upload all the photos from the Flickr dump; only photos inside albums.
 
 [0]: https://help.flickr.com/en_us/download-photos-or-albums-in-flickr-HJeLjhQskX
 [1]: https://developers.google.com/photos/library/guides/overview
@@ -22,7 +22,7 @@ The scripts in this repo help achieve the following:
 ## Installation
 
 * Requires Python 3.4
-* You may want to create a `virtualenv` first 
+* You may want to create a `virtualenv` first
 * Clone this repo
 
 ```
@@ -33,7 +33,9 @@ The scripts in this repo help achieve the following:
 
 First, follow the [Getting Started Guide][2] to enable the Photos API.
 
-Next, create a Client ID by following the [setting up oauth 2.0 procedure][3] with _Application Type_ set to **Other**.
+Next, create a Client ID by following the [setting up oauth 2.0 procedure][3] with _Application Type_ set to **Desktop app**.
+
+In the [OAuth consent screen][4] add your google account to Test users.
 
 Finally, download the Client secret as `credentials.json` and save it on your local machine. It will look something like the following:
 
@@ -56,14 +58,15 @@ Finally, download the Client secret as `credentials.json` and save it on your lo
 
 [2]: https://developers.google.com/photos/library/guides/get-started
 [3]: https://support.google.com/cloud/answer/6158849
+[4]: https://console.cloud.google.com/apis/credentials/consent
 
 ## Preparing the workspace
 
-The Flickr dump includes a number of zip files. Unzip all the zip files in your workspace, which should result in a number of folders. One of these folders should contain a number `json` files while all the other folders should contain the actual photos and videos. In my data dump, there were 500 photos/videos per zip file. 
+The Flickr dump includes a number of zip files. Unzip all the zip files in your workspace, which should result in a number of folders. One of these folders should contain a number `json` files while all the other folders should contain the actual photos and videos. In my data dump, there were 500 photos/videos per zip file.
 
 First, copy all the photos/videos from individual folders to a single folder.
 
-Next, in the cloned repo, you'll find a `config.json` file. Open it for editing. 
+Next, in the cloned repo, you'll find a `config.json` file. Open it for editing.
 
 ```json
 {
@@ -81,32 +84,28 @@ Update the file contents as per the following:
 * `flickr_photo_dir`: The single folder containing all the flickr photos/videos.
 * `flickr_photo_json_dir`: The folder containing all the flickr json metadata files.
 * `flickr_albums_json`: Path to the `albums.json` metadata file.
-  *  You may supply a different `albums.json` file with a different set of albums for upload. 
+  *  You may supply a different `albums.json` file with a different set of albums for upload.
 * `client_secrets_file`: The client credentials file that you got after setting up Google Photos API access.
-* `auth_token_file`: The file which will hold access tokens to the Photos API. 
-  * This file will be created when you first run the upload process. For now, just provide the path to a non-existing file. 
+* `auth_token_file`: The file which will hold access tokens to the Photos API.
+  * This file will be created when you first run the upload process. For now, just provide the path to a non-existing file.
 
-## Updating GPS information 
+## Updating GPS and DateTime information in EXIF
 
-I spent a lot of time manually geo-tagging thousands of photos over the years using the Flickr photo organizer. Thus, I wanted to retain that geo location information when migrating to Google Photos. 
+I spent a lot of time manually geo-tagging thousands of photos over the years using the Flickr photo organizer. Thus, I wanted to retain that geo location information when migrating to Google Photos.
 
-Google Photos doesn't have an API to set geo location. However, it does honour any geo location information already present in the photo's exif metadata. 
+Google Photos doesn't have an API to set geo location. However, it does honour any geo location information already present in the photo's exif metadata.
 
-The `exif-restore.py` utility does exactly this - take the geolocation information from each photo's metadata json file and update the file's exif information with the gps data. It only does this for photos which don't already have embedded GPS information.
+The `exif.py` library does exactly this - take the geolocation information from each photo's metadata json file and update the file's exif information with the gps data. It only does this for photos which don't already have embedded GPS information.
 
-**WARNING:** This process does an in-place update of photo files. Ensure you have a backup before running it!
+If a photo is missing the EXIF DateTime, it is added using "date_taken" from the metadata file. Google Photos doesn't have an API to set the date taken.
 
-To execute this process:
+**WARNING:** This process does an in-place update of photo files. Ensure you have a backup before running `flickr-restore.py`.
 
-```
-> exif-restore.py config.json
-```
-
-Progress info will be printed to console and more detailed logs written to `exif-restore.log`.
+The EXIF is updated during upload.
 
 ## Uploading to Google Photos
 
-Now for the main course. All you need to start the upload is:
+All you need to start the upload is:
 
 ```
 > flickr-restore.py config.json
@@ -114,9 +113,36 @@ Now for the main course. All you need to start the upload is:
 
 The first time that you run this, it'll prompt you to give access to your Google Photos account. Follow the instructions to grant access. You only need to do it once and the access tokens are saved to the previously mentioned `auth_token_file`.
 
+If while granting access you see the [error message][5] `Something went wrong. Sorry, something went wrong there. Try again.`,
+logout of the Google account or use another browser window not logged into that account
+and visit the link again and to log back in.
+
+[5]: https://stackoverflow.com/q/65821740
+
 Progress info will be printed to console and more detailed logs written to `flickr-restore.log`.
 
 **TIP:** You may want to create a brand new Google Account to test this out first, before you let it lose on your primary Google Photos account. That's what I did while developing this!
+
+### Files created
+
+#### id_files.json
+
+The `config.json` "flickr_photo_dir" is scanned to create this mapping of Flickr's photo ID to file name.
+It is done once and then read on the future runs.
+
+#### done_ids.txt
+
+After a photo is uploaded, the Flickr photo ID and the upload token from Google are appended to this file.
+
+#### done_albums.txt
+
+After a Google album is created, the album name and the Google album data are appended to this file.
+
+#### `config.json` "auth_token_file"
+
+When the token expires, `flickr-restore.py` prints: google.auth.exceptions.RefreshError: ('invalid_grant: Token has been expired or revoked.'
+
+Remove this file to reauthorize.
 
 ## Limitations
 
@@ -124,7 +150,9 @@ The upload utility works around various limitations in the Google Photos API and
 
 * While the Flickr dump has a metadata json per photo that describes everything about the photo, the one thing it doesn't specify is the actual file name of the photo on disk. So the uploader has to use some name based heuristics to map a flickr photo id to the photo file on disk. These heuristics have worked for my photo dump but may break for you!
 * Google Photos doesn't provide an API to set the album cover image. So I just upload the Flickr album cover photo as the first photo in the Google album, which then becomes the default album cover.
-* Google Photos API doesn't give a listing of album contents. So in case of an broken upload, the best we can do is to compare count of album contents and reupload the entire album if there's a mismatch. 
+* When a photo or album description is [too long for the API][6], it is replaced with "Too much description text", instead of failing and left blank. Search for "Too much description text" using quotes to find them in your Google Photos to manually update the text.
+
+[6]: https://developers.google.com/photos/library/reference/rest/v1/mediaItems/batchCreate#NewMediaItem
 
 ## Contributing
 
