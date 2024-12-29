@@ -264,6 +264,7 @@ class PhotoUploader:
             return
 
         self.done_albums_file = open("done_albums.txt", 'a')
+        self.google_albums_by_title = {}
 
         params = {'excludeNonAppCreatedData': True}
 
