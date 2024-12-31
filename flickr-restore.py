@@ -11,6 +11,7 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 
 from exif import DateHelper, GeoHelper
 from flickr import FlickrHelper
+import flickr
 
 def save_credentials(creds, auth_token_file):
     creds_dict = {
@@ -56,6 +57,7 @@ class PhotoUploader:
         logging.info("Uploading %s photos", len(id_files))
 
         for id, file in id_files:
+            logging.info(f"Uploading photo: {id}, {file}")
             self.update_exif(id, file)
             upload_token = self.upload_photo(id, file)
             if not upload_token:
@@ -105,6 +107,9 @@ class PhotoUploader:
         self.posted(post, f"add {flickr_photo_id} to album {album_title}")
 
     def update_exif(self, flickr_photo_id, flickr_photo_file):
+        if not self.flickr.has_photo_json(flickr_photo_id):
+            return
+
         logging.debug("Going to update exif for photo: '%s'" % flickr_photo_id)
         path = self.flickr.get_photo_fspath(flickr_photo_file)
         geo = self.flickr.get_photo_lat_lon(flickr_photo_id)
@@ -179,7 +184,6 @@ class PhotoUploader:
         return description
 
     def upload_photo(self, flickr_photo_id, flickr_photo_file):
-        logging.info("Uploading photo: %s, %s" % (flickr_photo_id, flickr_photo_file))
         path = self.flickr.get_photo_fspath(flickr_photo_file)
         with open(path, 'rb') as f:
             headers = {
