@@ -63,22 +63,19 @@ class PhotoUploader:
             if not upload_token:
                 continue
             photo_json = self.flickr.get_photo_json(id)
-            self.add_photo_to_albums(photo_json, upload_token)
-            self.add_photo_to_tags(photo_json, upload_token)
+            if photo_json:
+                self.add_photo_to_albums(photo_json, upload_token)
+                self.add_photo_to_tags(photo_json, upload_token)
             self.flickr.done_id(id, upload_token)
-            # return
 
     def add_photo_to_albums(self, photo_json, upload_token):
-        if photo_json is None:
-            return
         for album in photo_json["albums"]:
             title = album["title"]
             album_json = self.flickr.get_album_json(title)
-            self.add_photo_to_album(album_json, photo_json, upload_token)
+            if album_json:
+                self.add_photo_to_album(album_json, photo_json, upload_token)
 
     def add_photo_to_tags(self, photo_json, upload_token):
-        if photo_json is None:
-            return
         for tag in photo_json["tags"]:
             title = "tag " + tag["tag"]
             album_json = {"title": title, "description": "", "cover_photo": ""}

@@ -86,6 +86,8 @@ class FlickrHelper:
 
     def get_photo_lat_lon(self, photo_id):
         photo_json = self.get_photo_json(photo_id)
+        if not photo_json:
+            return None
         geos = photo_json["geo"]
         try:
             geo = geos[0]
@@ -112,8 +114,7 @@ class FlickrHelper:
                 photo_json = json.load(json_file)
                 return photo_json
         except Exception as err:
-            logging.warn("Could not find photo json file: {}".format(photo_json_file))
-            logging.warn("Exception was: {}".format(err))
+            logging.warn(f"Photo json file {photo_json_file} read error {err}")
             return None
 
 def get_last_integer(filename):
