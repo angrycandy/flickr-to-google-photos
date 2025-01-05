@@ -176,7 +176,7 @@ class PhotoUploader:
 
         # https://developers.google.com/photos/library/reference/rest/v1/mediaItems/batchCreate#NewMediaItem
         if len(description) > 909:
-            logging.info(f"replaced Too much description text for {item}")
+            logging.info(f"replaced Too much description text for {item}:\n{description}")
             description = "Too much description text"
         return description
 
